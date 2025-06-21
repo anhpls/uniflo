@@ -12,6 +12,11 @@ export default {
         background: "var(--background)",
         foreground: "var(--foreground)",
       },
+      fontFamily: {
+        geist: "var(--font-geist-sans)",
+        geistMono: "var(--font-geist-mono)",
+        dmSans: "var(--font-dm-sans)", // Register DM Sans in Tailwind
+      },
     },
   },
   plugins: [],
