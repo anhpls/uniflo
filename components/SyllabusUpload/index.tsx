@@ -4,6 +4,11 @@ import { motion } from "framer-motion";
 import { useDropzone } from "react-dropzone";
 import { MdKeyboardDoubleArrowLeft } from "react-icons/md";
 import { useRouter } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 export default function SyllabusUpload() {
   const [files, setFiles] = useState<File[]>([]);
@@ -33,24 +38,44 @@ export default function SyllabusUpload() {
     }
 
     setIsUploading(true);
-    setTimeout(async () => {
-      const formData = new FormData();
-      files.forEach((file) => formData.append("syllabi", file));
 
-      try {
-        const response = await fetch("/api/upload", {
+    try {
+      for (const file of files) {
+        const filePath = `syllabi/${Date.now()}-${file.name}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from("syllabi")
+          .upload(filePath, file);
+
+        if (uploadError) {
+          console.error("Error uploading file:", uploadError);
+          setMessage("Error uploading file to storage.");
+          setIsUploading(false);
+          return;
+        }
+
+        // After upload, call the parser
+        const response = await fetch("/api/parse-syllabus", {
           method: "POST",
-          body: formData,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filePath }),
         });
-        const data = await response.json();
-        setMessage(data.message);
-        setFiles([]);
-      } catch {
-        setMessage("Error uploading files.");
-      } finally {
-        setIsUploading(false);
+
+        if (!response.ok) {
+          setMessage("Error parsing syllabus.");
+          setIsUploading(false);
+          return;
+        }
       }
-    }, 500);
+
+      setMessage("Files uploaded and parsed successfully!");
+      setFiles([]);
+    } catch (err) {
+      console.error(err);
+      setMessage("Unexpected error occurred.");
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   const removeFile = (index: number) => {
