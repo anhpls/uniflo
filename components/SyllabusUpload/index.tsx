@@ -17,16 +17,18 @@ export default function SyllabusUpload() {
   const router = useRouter();
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0) {
-      setFiles((prevFiles) => [...prevFiles, ...acceptedFiles]);
-    }
+    // Ensure files are properly wrapped as File objects
+    const sanitizedFiles = acceptedFiles.map(
+      (file) => new File([file], file.name, { type: file.type })
+    );
+    setFiles((prevFiles) => [...prevFiles, ...sanitizedFiles]);
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      "image/*": [],
       "application/pdf": [],
+      "image/*": [],
     },
     multiple: true,
   });
@@ -41,20 +43,25 @@ export default function SyllabusUpload() {
 
     try {
       for (const file of files) {
-        const filePath = `syllabi/${Date.now()}-${file.name}`;
+        const filePath = `syllabi/${Date.now()}-${encodeURIComponent(
+          file.name
+        )}`;
 
         const { error: uploadError } = await supabase.storage
           .from("syllabi")
-          .upload(filePath, file);
+          .upload(filePath, file, {
+            cacheControl: "3600",
+            upsert: false,
+          });
 
         if (uploadError) {
-          console.error("Error uploading file:", uploadError);
+          console.error("Supabase upload error:", uploadError);
           setMessage("Error uploading file to storage.");
           setIsUploading(false);
           return;
         }
 
-        // After upload, call the parser
+        // After upload, call parser
         const response = await fetch("/api/parse-syllabus", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -113,8 +120,8 @@ export default function SyllabusUpload() {
           {...getRootProps()}
           className={`border-2 rounded-lg p-6 cursor-pointer text-center h-24 flex items-center justify-center w-96 transition-colors duration-300 border-dashed ${
             isDragActive
-              ? "border-blue-500 bg-blue-100 text-blue-700" // Active: Blue border & bg
-              : "border-gray-300 bg-gray-100 text-gray-600" // Default: Gray border & bg
+              ? "border-blue-500 bg-blue-100 text-blue-700"
+              : "border-gray-300 bg-gray-100 text-gray-600"
           }`}
         >
           <input {...getInputProps()} multiple />
