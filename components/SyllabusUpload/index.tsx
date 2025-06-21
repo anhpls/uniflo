@@ -6,31 +6,51 @@ import { MdKeyboardDoubleArrowLeft } from "react-icons/md";
 import { useRouter } from "next/navigation";
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
+
+interface UploadResult {
+  fileName: string;
+  status: "success" | "error";
+  message: string;
+  course?: string;
+  eventsCount?: number;
+}
 
 export default function SyllabusUpload() {
   const [files, setFiles] = useState<File[]>([]);
   const [message, setMessage] = useState<string>("");
   const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [uploadResults, setUploadResults] = useState<UploadResult[]>([]);
   const router = useRouter();
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
-    // Ensure files are properly wrapped as File objects
-    const sanitizedFiles = acceptedFiles.map(
-      (file) => new File([file], file.name, { type: file.type })
+    const validFiles = acceptedFiles.filter((file) =>
+      file.type.match(/^(application\/pdf|image\/)/)
     );
-    setFiles((prevFiles) => [...prevFiles, ...sanitizedFiles]);
+
+    if (validFiles.length !== acceptedFiles.length) {
+      setMessage("Only PDF and image files are accepted.");
+    }
+
+    setFiles((prevFiles) => [
+      ...prevFiles,
+      ...validFiles.map(
+        (file) => new File([file], file.name, { type: file.type })
+      ),
+    ]);
   }, []);
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
-      "application/pdf": [],
-      "image/*": [],
+      "application/pdf": [".pdf"],
+      "image/*": [".png", ".jpg", ".jpeg"],
     },
     multiple: true,
+    maxSize: 10 * 1024 * 1024, // 10MB
   });
 
   const handleUpload = async () => {
@@ -40,46 +60,78 @@ export default function SyllabusUpload() {
     }
 
     setIsUploading(true);
+    setMessage("Processing files...");
+    setUploadResults([]);
 
     try {
-      for (const file of files) {
-        const filePath = `syllabi/${Date.now()}-${encodeURIComponent(
-          file.name
-        )}`;
+      const results: UploadResult[] = [];
 
-        const { error: uploadError } = await supabase.storage
-          .from("syllabi")
-          .upload(filePath, file, {
-            cacheControl: "3600",
-            upsert: false,
+      for (const file of files) {
+        try {
+          const filePath = `syllabi/${Date.now()}-${encodeURIComponent(
+            file.name
+          )}`;
+
+          // 1. Upload to Supabase Storage
+          const { error: uploadError } = await supabase.storage
+            .from("syllabi")
+            .upload(filePath, file);
+
+          if (uploadError)
+            throw new Error(`Upload failed: ${uploadError.message}`);
+
+          // 2. Call Parse API
+          const parseResponse = await fetch("/api/parse-syllabus", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ filePath }),
           });
 
-        if (uploadError) {
-          console.error("Supabase upload error:", uploadError);
-          setMessage("Error uploading file to storage.");
-          setIsUploading(false);
-          return;
-        }
+          // 3. Handle API response
+          const contentType = parseResponse.headers.get("content-type");
+          if (!contentType || !contentType.includes("application/json")) {
+            const text = await parseResponse.text();
+            throw new Error(text || "Invalid response from server");
+          }
 
-        // After upload, call parser
-        const response = await fetch("/api/parse-syllabus", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ filePath }),
-        });
+          const { data, error: parseError } = await parseResponse.json();
 
-        if (!response.ok) {
-          setMessage("Error parsing syllabus.");
-          setIsUploading(false);
-          return;
+          if (parseError || !data) {
+            throw new Error(parseError || "No data returned");
+          }
+
+          results.push({
+            fileName: file.name,
+            status: "success",
+            message: "Successfully processed",
+            course: data.course,
+            eventsCount: data.eventsCount,
+          });
+        } catch (error) {
+          console.error(`Error processing ${file.name}:`, error);
+          results.push({
+            fileName: file.name,
+            status: "error",
+            message:
+              error instanceof Error
+                ? error.message.replace(/<\/?[^>]+(>|$)/g, "")
+                : "Processing failed",
+          });
         }
       }
 
-      setMessage("Files uploaded and parsed successfully!");
+      setUploadResults(results);
       setFiles([]);
-    } catch (err) {
-      console.error(err);
-      setMessage("Unexpected error occurred.");
+
+      const successCount = results.filter((r) => r.status === "success").length;
+      setMessage(
+        successCount === results.length
+          ? `Successfully processed ${successCount} file(s)!`
+          : `Processed ${successCount} of ${results.length} files successfully`
+      );
+    } catch (error) {
+      console.error("Unexpected error:", error);
+      setMessage("An unexpected error occurred. Please try again.");
     } finally {
       setIsUploading(false);
     }
@@ -105,44 +157,49 @@ export default function SyllabusUpload() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.5 }}
-        className="p-6 max-w-md mx-auto bg-transparent rounded-xl shadow-md space-y-4"
+        className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md space-y-4"
       >
         <motion.h2
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3, duration: 0.5 }}
-          className="text-lg font-bold"
+          className="text-lg font-bold text-gray-800"
         >
-          Add Your Course Syllabi
+          Upload Course Syllabi
         </motion.h2>
 
         <div
           {...getRootProps()}
-          className={`border-2 rounded-lg p-6 cursor-pointer text-center h-24 flex items-center justify-center w-96 transition-colors duration-300 border-dashed ${
+          className={`border-2 rounded-lg p-6 cursor-pointer text-center h-24 flex items-center justify-center w-full transition-colors duration-300 border-dashed ${
             isDragActive
-              ? "border-blue-500 bg-blue-100 text-blue-700"
-              : "border-gray-300 bg-gray-100 text-gray-600"
+              ? "border-blue-500 bg-blue-50 text-blue-700"
+              : "border-gray-300 bg-gray-50 text-gray-600"
           }`}
         >
-          <input {...getInputProps()} multiple />
+          <input {...getInputProps()} />
           <p className="w-full text-center whitespace-nowrap overflow-hidden text-ellipsis">
             {isDragActive
               ? "Release to upload your files"
-              : "Upload each syllabus (PDF or Image)"}
+              : "Drag & drop PDFs or images here, or click to select"}
           </p>
         </div>
 
         {files.length > 0 && (
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 space-y-2 max-h-40 overflow-y-auto">
             {files.map((file, index) => (
               <div
                 key={index}
-                className="flex items-center justify-between p-2 rounded"
+                className="flex items-center justify-between p-2 bg-gray-50 rounded border border-gray-200"
               >
-                <span className="truncate font-semibold">{file.name}</span>
+                <span className="truncate text-sm text-gray-700">
+                  {file.name}
+                </span>
                 <button
-                  onClick={() => removeFile(index)}
-                  className="text-red-500 text-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeFile(index);
+                  }}
+                  className="text-red-500 hover:text-red-700 text-xs font-medium"
                 >
                   Remove
                 </button>
@@ -152,26 +209,88 @@ export default function SyllabusUpload() {
         )}
 
         <motion.button
-          transition={{ delay: 0.1, duration: 0.2 }}
           whileHover={{ scale: 1.02 }}
-          className={`bg-stone-900 hover:bg-stone-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:ring-2 focus:ring-red-300 w-full transition-colors duration-300 ${
-            isUploading ? "opacity-50 cursor-not-allowed" : ""
-          }`}
+          whileTap={{ scale: 0.98 }}
+          className={`bg-stone-800 hover:bg-stone-700 text-white font-medium py-2 px-4 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-500 focus:ring-offset-2 w-full transition-colors duration-200 ${
+            isUploading ? "opacity-70 cursor-not-allowed" : ""
+          } ${files.length === 0 ? "opacity-50 cursor-not-allowed" : ""}`}
           onClick={handleUpload}
-          disabled={isUploading}
+          disabled={isUploading || files.length === 0}
         >
-          {isUploading ? "Uploading..." : "Upload"}
+          {isUploading ? (
+            <span className="flex items-center justify-center">
+              <svg
+                className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                ></circle>
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                ></path>
+              </svg>
+              Processing...
+            </span>
+          ) : (
+            "Upload & Parse Syllabi"
+          )}
         </motion.button>
 
         {message && (
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            transition={{ delay: 0.1, duration: 0.2 }}
-            className="text-sm text-gray-600 text-center"
+            className={`text-sm text-center ${
+              message.includes("failed") || message.includes("error")
+                ? "text-red-500"
+                : "text-green-600"
+            }`}
           >
             {message}
           </motion.p>
+        )}
+
+        {uploadResults.length > 0 && (
+          <div className="mt-4 space-y-2 max-h-60 overflow-y-auto">
+            {uploadResults.map((result, index) => (
+              <div
+                key={index}
+                className={`p-3 rounded-lg border ${
+                  result.status === "success"
+                    ? "bg-green-50 border-green-200 text-green-700"
+                    : "bg-red-50 border-red-200 text-red-700"
+                }`}
+              >
+                <div className="font-medium flex justify-between">
+                  <span className="truncate">{result.fileName}</span>
+                  <span className="text-xs font-semibold ml-2">
+                    {result.status.toUpperCase()}
+                  </span>
+                </div>
+                <div className="text-sm mt-1">{result.message}</div>
+                {result.course && (
+                  <div className="text-xs mt-1">
+                    <span className="font-medium">Course:</span> {result.course}
+                    {result.eventsCount !== undefined && (
+                      <span className="ml-2">
+                        • {result.eventsCount} events
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </motion.div>
     </section>
