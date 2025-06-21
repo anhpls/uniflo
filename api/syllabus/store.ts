@@ -31,8 +31,15 @@ export async function storeParsedData(parsedData: ParsedData) {
       );
 
       courseId = course.rows[0].id;
+    } else {
+      throw new Error("Instructor information is required to create a course.");
     }
 
+    if (courseId === null) {
+      throw new Error(
+        "courseId is null. Cannot insert textbooks without a valid courseId."
+      );
+    }
     for (const book of textbooks) {
       await db.query(
         "INSERT INTO textbooks (course_id, title, author, type) VALUES ($1, $2, $3, $4)",
