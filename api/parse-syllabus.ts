@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import axios from "axios";
 import pdf from "pdf-parse";
+import { parse, addWeeks, format } from "date-fns";
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -22,7 +23,7 @@ export default async function handler(
   }
 
   try {
-    const { filePath } = req.body;
+    const { filePath, startDate } = req.body;
 
     // 1. Download PDF from Supabase
     const { data: signedData } = await supabase.storage
@@ -41,40 +42,55 @@ export default async function handler(
     const data = await pdf(Buffer.from(arrayBuffer));
     const pdfText = data.text;
 
+    const normalizedText = convertWeeksToDates(pdfText, startDate);
     // 3. Parse with OpenAI
-    const parserPrompt = `Extract ALL syllabus information including:
-- Course name (required)
-- Instructor info (name, email, office hours)
-- Textbooks (title, author, ISBN if available)
-- Grading policy (breakdown, scale)
-- All important dates (exams, assignments)
+    const parserPrompt = `You are a syllabus parser. Your task is to extract as much structured information as possible. If a field is missing, leave it as an empty string. Do NOT fabricate information, but if information is partially available, include it.
 
-Return as JSON with this structure:
+Schema:
+
 {
-  "course": string,
+  "course": "Course Name (string)",
   "instructor": {
-    "name": string,
-    "email": string,
-    "officeHours": string
+    "name": "Instructor Name (string)",
+    "email": "Instructor Email (string)",
+    "officeHours": "Office Hours (string)"
   },
-  "textbooks": string[],
-  "grading": {
-    "breakdown": string,
-    "scale": string
-  },
-  "events": Array<{
-    "type": "Assignment"|"Exam"|"Quiz"|"Project",
-    "title": string,
-    "dueDate": string|null,
-    "weekReference": string|null
-  }>
-}`;
+  "textbooks": [
+    {
+      "title": "Textbook Title (string)",
+      "author": "Author Name (string)",
+      "isbn": "ISBN (string)"
+    }
+  ],
+  "assignments": [
+    {
+      "title": "Assignment Title (string)",
+      "dueDate": "YYYY-MM-DD (string",
+      "type": "Assignment | Exam | Quiz | Project"
+    }
+  ]
+}
+
+Rules:
+
+- Extract course name from the syllabus text; usually at the top of the syllabus or large text
+- Always Extract instructor information, including name, email, and office hours.
+- Office hours can be a string like "MWF 2-3pm" or "By appointment". It is text that is always near the instructor's name or email.
+- Extract assignments with titles and due dates.
+- For textbooks, extract titles and authors, and isbn if available.
+- For assignments: find assignments in YYYY-MM-DD format.
+- Output ONLY valid JSON, no markdown, no explanation, no extra text.
+- Do not wrap output in code blocks.
+
+Syllabus Text:
+${normalizedText}
+`;
 
     const aiResponse = await openai.chat.completions.create({
       model: "gpt-4-turbo",
       messages: [
         { role: "system", content: parserPrompt },
-        { role: "user", content: pdfText },
+        { role: "user", content: normalizedText },
       ],
       response_format: { type: "json_object" },
       max_tokens: 2000,
@@ -132,4 +148,38 @@ Return as JSON with this structure:
       details: error instanceof Error ? error.message : String(error),
     });
   }
+}
+/**
+ * Attempts to replace week references (e.g., "Week 1", "Week 2") in the syllabus text
+ * with their corresponding date ranges, based on the provided course start date.
+ *
+ * @param pdfText The syllabus text extracted from the PDF.
+ * @param startDate The course start date as a string (YYYY-MM-DD) or Date object.
+ * @returns The syllabus text with week references replaced by date ranges.
+ */
+function convertWeeksToDates(pdfText: string, startDate: string | Date) {
+  if (!startDate) return pdfText;
+
+  let baseDate: Date;
+  if (typeof startDate === "string") {
+    // Accepts "YYYY-MM-DD" or ISO string
+    baseDate = parse(startDate, "yyyy-MM-dd", new Date());
+    if (isNaN(baseDate.getTime())) {
+      baseDate = new Date(startDate);
+    }
+  } else {
+    baseDate = startDate;
+  }
+
+  // Replace "Week X" with "Week X (YYYY-MM-DD to YYYY-MM-DD)"
+  return pdfText.replace(/Week\s*(\d+)/gi, (match, weekNumStr) => {
+    const weekNum = parseInt(weekNumStr, 10);
+    if (isNaN(weekNum)) return match;
+    const weekStart = addWeeks(baseDate, weekNum - 1);
+    const weekEnd = addWeeks(baseDate, weekNum - 1);
+    weekEnd.setDate(weekEnd.getDate() + 6);
+    const startStr = format(weekStart, "yyyy-MM-dd");
+    const endStr = format(weekEnd, "yyyy-MM-dd");
+    return `Week ${weekNum} (${startStr} to ${endStr})`;
+  });
 }
